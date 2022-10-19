@@ -1,165 +1,104 @@
-odoo.define("tier_validation.systray", function (require) {
-    "use strict";
+/** @odoo-module **/
 
-    var core = require("web.core");
-    var session = require("web.session");
-    var SystrayMenu = require("web.SystrayMenu");
-    var Widget = require("web.Widget");
+import {registerModel} from "@mail/model/model_core";
+import {attr, many} from "@mail/model/model_field";
 
-    var QWeb = core.qweb;
+import session from "web.session";
 
-    var ReviewMenu = Widget.extend({
-        template: "tier.validation.ReviewMenu",
-        events: {
-            "show.bs.dropdown": "_onReviewMenuShow",
-            "click .o_mail_activity_action": "_onReviewActionClick",
-            "click .o_mail_preview": "_onReviewFilterClick",
+registerModel({
+    name: "ReviewerMenuView",
+    lifecycleHooks: {
+        _created() {
+            this.fetchData();
+            document.addEventListener("click", this._onClickCaptureGlobal, true);
         },
-        start: function () {
-            this.$reviews_preview = this.$(".o_mail_systray_dropdown_items");
-            this._updateReviewPreview();
-            var channel = "base.tier.validation";
-            this.call("bus_service", "addChannel", channel);
-            this.call("bus_service", "startPolling");
-            this.call("bus_service", "onNotification", this, this._updateReviewPreview);
-            return this._super();
+        _willDelete() {
+            document.removeEventListener("click", this._onClickCaptureGlobal, true);
         },
-
-        // Private
-
-        /**
-         * Make RPC and get current user's activity details
-         * @private
-         * @returns {integer}
-         */
-        _getReviewData: function () {
-            var self = this;
-
-            return self
-                ._rpc({
-                    model: "res.users",
-                    method: "review_user_count",
-                    kwargs: {
-                        context: session.user_context,
-                    },
-                })
-                .then(function (data) {
-                    self.reviews = data;
-                    self.reviewCounter = _.reduce(
-                        data,
-                        function (total_count, p_data) {
-                            return total_count + p_data.pending_count;
-                        },
-                        0
-                    );
-                    self.$(".o_notification_counter").text(self.reviewCounter);
-                    self.$el.toggleClass("o_no_notification", !self.reviewCounter);
-                });
+    },
+    recordMethods: {
+        close() {
+            this.update({isOpen: false});
         },
+        async fetchData() {
+            const data = await this.messaging.rpc({
+                model: "res.users",
+                method: "review_user_count",
+                args: [],
+                kwargs: {context: session.user_context},
+            });
 
-        /**
-         * Get particular model view to redirect on click of review on that model.
-         * @private
-         * @param {String} model
-         * @returns {integer}
-         */
-        _getReviewModelViewID: function (model) {
-            return this._rpc({
-                model: model,
-                method: "get_activity_view_id",
+            this.update({
+                reviewGroups: data.map((vals) =>
+                    this.messaging.models["ReviewGroup"].convertData(vals)
+                ),
+                extraCount: 0,
             });
         },
-
         /**
-         * Update(render) activity system tray view on activity updation.
-         * @private
+         * @param {MouseEvent} ev
          */
-        _updateReviewPreview: function () {
-            var self = this;
-            self._getReviewData().then(function () {
-                self.$reviews_preview.html(
-                    QWeb.render("tier.validation.ReviewMenuPreview", {
-                        reviews: self.reviews,
-                    })
-                );
-            });
-        },
-
-        /**
-         * Update counter based on activity status(created or Done)
-         * @private
-         * @param {Object} [data] key, value to decide activity created or deleted
-         * @param {String} [data.type] notification type
-         * @param {Boolean} [data.activity_deleted] when activity deleted
-         * @param {Boolean} [data.activity_created] when activity created
-         */
-        _updateCounter: function (data) {
-            if (data) {
-                if (data.review_created) {
-                    this.reviewCounter++;
-                }
-                if (data.review_deleted && this.reviewCounter > 0) {
-                    this.reviewCounter--;
-                }
-                this.$(".o_notification_counter").text(this.reviewCounter);
-                this.$el.toggleClass("o_no_notification", !this.reviewCounter);
+        onClickDropdownToggle(ev) {
+            ev.preventDefault();
+            if (this.isOpen) {
+                this.update({isOpen: false});
+            } else {
+                this.update({isOpen: true});
+                this.fetchData();
             }
         },
-
-        // ------------------------------------------------------------
-        // Handlers
-        // ------------------------------------------------------------
-
         /**
-         * Redirect to specific action given its xml id
+         * Closes the menu when clicking outside, if appropriate.
+         *
          * @private
          * @param {MouseEvent} ev
          */
-        _onReviewActionClick: function (ev) {
-            ev.stopPropagation();
-            var actionXmlid = $(ev.currentTarget).data("action_xmlid");
-            this.do_action(actionXmlid);
+        _onClickCaptureGlobal(ev) {
+            if (!this.exists()) {
+                return;
+            }
+            if (!this.component || !this.component.root.el) {
+                return;
+            }
+            if (this.component.root.el.contains(ev.target)) {
+                return;
+            }
+            this.close();
         },
-
+    },
+    fields: {
+        reviewGroups: many("ReviewGroup", {
+            sort: [["smaller-first", "irModel.id"]],
+        }),
+        reviewGroupViews: many("ReviewGroupView", {
+            compute() {
+                return this.reviewGroups.map((reviewGroup) => {
+                    return {
+                        reviewGroup,
+                    };
+                });
+            },
+            inverse: "reviewMenuViewOwner",
+        }),
+        component: attr(),
+        counter: attr({
+            compute() {
+                return this.reviewGroups.reduce(
+                    (total, group) => total + group.pending_count,
+                    this.extraCount
+                );
+            },
+        }),
         /**
-         * Redirect to particular model view
-         * @private
-         * @param {MouseEvent} event
+         * Determines the number of activities that have been added in the
+         * system but not yet taken into account in each activity group counter.
+         *
+         * @deprecated this field should be replaced by directly updating the
+         * counter of each group.
          */
-        _onReviewFilterClick: function (event) {
-            // Fetch the data from the button otherwise fetch the ones from the
-            // parent (.o_tier_channel_preview).
-            var data = _.extend(
-                {},
-                $(event.currentTarget).data(),
-                $(event.target).data()
-            );
-            var context = {};
-            this.do_action({
-                type: "ir.actions.act_window",
-                name: data.model_name,
-                res_model: data.res_model,
-                views: [
-                    [false, "list"],
-                    [false, "form"],
-                ],
-                search_view_id: [false],
-                domain: [["can_review", "=", true]],
-                context: context,
-            });
-        },
-
-        /**
-         * When menu clicked update activity preview if counter updated
-         * @private
-         * @param {MouseEvent} event
-         */
-        _onReviewMenuShow: function () {
-            this._updateReviewPreview();
-        },
-    });
-
-    SystrayMenu.Items.push(ReviewMenu);
-
-    return ReviewMenu;
+        extraCount: attr(),
+        isOpen: attr({
+            default: false,
+        }),
+    },
 });

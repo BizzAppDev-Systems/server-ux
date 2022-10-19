@@ -1,66 +1,47 @@
-odoo.define("base_tier_validation.ReviewField", function (require) {
-    "use strict";
+/** @odoo-module **/
 
-    var AbstractField = require("web.AbstractField");
-    var core = require("web.core");
-    var field_registry = require("web.field_registry");
+import {registry} from "@web/core/registry";
+import {X2ManyField} from "@web/views/fields/x2many/x2many_field";
 
-    var QWeb = core.qweb;
+import {useService} from "@web/core/utils/hooks";
 
-    var ReviewField = AbstractField.extend({
-        template: "tier.review.Collapse",
-        events: {
-            "click .o_info_btn": "_onButtonClicked",
-            "show.bs.collapse": "_showCollapse",
-            "hide.bs.collapse": "_hideCollapse",
-        },
-        start: function () {
-            var self = this;
-            self._renderDropdown();
-        },
+import {renderToMarkup, renderToText} from "@web/core/utils/render";
+const {
+    Component,
+    onWillStart,
+    onWillRender,
+    onRendered,
+    onPatched,
+    useState,
+    useSubEnv,
+} = owl;
 
-        /**
-         * Make RPC and get current user's activity details
-         * @private
-         * @param {Object} res_ids
-         * @returns {integer}
-         */
-        _getReviewData: function (res_ids) {
-            var self = this;
+export class ReviewsTable extends Component {
+    setup() {
+        this.docs = useState({});
+        var self = this;
+        this.collapse = false;
+        this.orm = useService("orm");
+        this.reviews = [];
+    }
+    _getReviewData() {
+        const records = this.env.model.root.data.review_ids.records;
+        const reviews = [];
+        for (var i = 0; i < records.length; i++) {
+            reviews.push(records[i].data);
+        }
+        return reviews;
+    }
+    onToggleCollapse(ev) {
+        var $panelHeading = $(ev.currentTarget).closest(".panel-heading");
+        if (this.collapse) {
+            $panelHeading.next("div#collapse1").hide();
+        } else {
+            $panelHeading.next("div#collapse1").show();
+        }
+        this.collapse = !this.collapse;
+    }
+}
 
-            return this._rpc({
-                model: "res.users",
-                method: "get_reviews",
-                args: [res_ids],
-            }).then(function (data) {
-                self.reviews = data;
-            });
-        },
-        _renderDropdown: function () {
-            var self = this;
-            return this._getReviewData(self.value).then(function () {
-                self.$(".o_review").html(
-                    QWeb.render("tier.review.ReviewsTable", {
-                        reviews: self.reviews,
-                    })
-                );
-            });
-        },
-        _onButtonClicked: function (event) {
-            event.preventDefault();
-            if (!this.$el.hasClass("open")) {
-                this._renderDropdown();
-            }
-        },
-        _showCollapse: function () {
-            this.$el.find(".panel-heading").addClass("active");
-        },
-        _hideCollapse: function () {
-            this.$el.find(".panel-heading").removeClass("active");
-        },
-    });
-
-    field_registry.add("tier_validation", ReviewField);
-
-    return ReviewField;
-});
+ReviewsTable.template = "base_tier_validation.Collapse";
+registry.category("fields").add("form.tier_validation", ReviewsTable);
